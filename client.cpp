@@ -47,6 +47,9 @@ public:
     SocketClient client;
     void HandleList();
     void HandleEditFile(const std::string& filename);
+    void HandleRemoveFile(const std::string& filename);
+    void HandleRunFile(const std::string& filename);
+    void HandleCreateFile(const std::string& filename);
     void HandleDownload(const std::string& filename);
     void HandleDownloadDir(const std::string& foldername);
 };
@@ -110,6 +113,118 @@ void FileManager::HandleEditFile(const std::string& filename) {
     // 4. Gửi báo cáo kết quả về Server
     client.Send(statusMsg);
     std::cout << "[+] Thuc hien EDITFILE " << filename << ": " << statusMsg << std::endl;
+}
+
+// Hàm xử lý việc xóa file từ xa
+void FileManager::HandleRemoveFile(const std::string& filename) {
+    std::string statusMsg;
+
+    // 1. Kiểm tra xem file có tồn tại và có phải là file thường không (tránh xóa nhầm folder)
+    if (!fs::exists(filename)) {
+        statusMsg = "ERROR: File '" + filename + "' khong ton tai.\n";
+    } else if (fs::is_directory(filename)) {
+        statusMsg = "ERROR: '" + filename + "' la mot thu muc, khong the dung lenh xoa file.\n";
+    } else {
+        // 2. Thực hiện xóa file
+        std::error_code ec;
+        if (fs::remove(filename, ec)) {
+            statusMsg = "SUCCESS: Da xoa file '" + filename + "' thanh cong.\n";
+        } else {
+            statusMsg = "ERROR: Khong the xoa file (Loi: " + ec.message() + ").\n";
+        }
+    }
+
+    // 3. Gửi báo cáo kết quả về Server và in log ra màn hình Client
+    client.Send(statusMsg);
+    std::cout << "[+] Thuc hien REMOVEFILE " << filename << ": " << statusMsg << std::endl;
+}
+
+// Hàm xử lý việc chạy một file thực thi trên Client
+void FileManager::HandleRunFile(const std::string& filepath) {
+    std::string statusMsg;
+
+    // 1. Kiểm tra xem file có tồn tại hay không
+    if (!fs::exists(filepath)) {
+        statusMsg = "ERROR: File '" + filepath + "' khong ton tai.\n";
+        client.Send(statusMsg);
+        return;
+    }
+
+    // 2. Kiểm tra xem có quyền thực thi (Execute) không, nếu chưa có thì cấp quyền
+    // (Tương đương lệnh chmod +x trên Linux)
+    try {
+        fs::permissions(filepath, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec, fs::perm_options::add);
+    } catch (const std::exception& e) {
+        statusMsg = "ERROR: Khong the cap quyen thuc thi cho file.\n";
+        client.Send(statusMsg);
+        return;
+    }
+
+    std::cout << "[*] Dang khoi chay file: " << filepath << "...\n";
+
+    // 3. Xây dựng lệnh chạy ngầm
+    // Định dạng đường dẫn chuẩn hóa
+    std::string runCmd;
+    if (filepath.rfind("/", 0) == std::string::npos && filepath.rfind("./", 0) == std::string::npos) {
+        runCmd = "./" + filepath;
+    } else {
+        runCmd = filepath;
+    }
+
+    // Đẩy tiến trình chạy ngầm bằng cách chuyển hướng log ra /dev/null và thêm &
+    runCmd = runCmd + " > /dev/null 2>&1 &";
+
+    int res = system(runCmd.c_str());
+
+    if (res == 0) {
+        statusMsg = "SUCCESS: Da kich hoat lenh chay file '" + filepath + "' ngam thanh cong.\n";
+    } else {
+        statusMsg = "ERROR: Co loi xay ra khi goi thuc thi file.\n";
+    }
+
+    // 4. Gửi phản hồi về Server
+    client.Send(statusMsg);
+    std::cout << "[+] Thuc hien RUNFILE " << filepath << ": " << statusMsg << std::endl;
+}
+
+// Hàm xử lý việc tạo file mới từ xa
+void FileManager::HandleCreateFile(const std::string& filename) {
+    // 1. Kiểm tra xem file đã tồn tại chưa bằng thư viện chuẩn fstream
+    // (Tránh việc vô tình ghi đè lên file quan trọng có sẵn)
+    std::ifstream checkFile(filename);
+    if (checkFile.is_open()) {
+        checkFile.close();
+        std::string errorMsg = "ERROR: File '" + filename + "' da ton tai tren Client. Dung EDITFILE de sua.\n";
+        client.Send(errorMsg);
+        return;
+    }
+
+    // 2. Gửi tín hiệu thông báo sẵn sàng nhận nội dung cho file mới
+    std::string readyMsg = "READY_FOR_CONTENT";
+    client.Send(readyMsg);
+
+    // 3. Nhận nội dung ban đầu từ Server
+    auto content = client.Receive();
+    if (content.empty()) {
+        std::cout << "[-] Mat ket noi khi dang nhan noi dung file moi.\n" << std::endl;
+        return;
+    }
+
+    // 4. Tiến hành tạo và ghi file mới
+    std::ofstream file(filename, std::ios::out | std::ios::binary);
+    std::string statusMsg;
+
+    if (!file.is_open()) {
+        statusMsg = "ERROR: Khong the tao file tren Client (Kiem tra lai duong dan hoac quyen ghi).\n";
+    } else {
+        file.write(content.c_str(), content.length());
+        file.close();
+        statusMsg = "SUCCESS: Da tao file '" + filename + "' moi thanh cong.\n";
+    }
+
+    // 5. Gửi báo cáo kết quả về Server và in log tại Client
+    client.Send(statusMsg);
+    std::cout << "[+] Thuc hien CREATEFILE " << filename << ": " << statusMsg << std::endl;
 }
 
 // Hàm xử lý lệnh GET (Tải file)
@@ -273,6 +388,18 @@ void RatClient::HandleCommand(const std::string& command) {
     else if (command.rfind("EDITFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh EDITFILE
         std::string filename = command.substr(9);
         fileManager.HandleEditFile(filename);
+    }
+    else if (command.rfind("REMOVEFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh REMOVEFILE
+        std::string filename = command.substr(11);
+        fileManager.HandleRemoveFile(filename);
+    }
+    else if (command.rfind("RUNFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh RUNFILE
+        std::string filepath = command.substr(8);
+        fileManager.HandleRunFile(filepath);
+    }
+    else if (command.rfind("CREATEFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh CREATEFILE
+        std::string filename = command.substr(11);
+        fileManager.HandleCreateFile(filename);
     }
 }
 
