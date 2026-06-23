@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <string>
 #include <cstring>
+#include <vector>
+#include <cstdint>
 
 // Thư viện Socket và Hệ thống trên Linux
 #include <sys/socket.h>
@@ -16,30 +18,69 @@
 namespace fs = std::filesystem;
 const int BUFFER_SIZE = 4096;
 
-
-
 class SocketClient {
 public:
     int socket;
-    void Send(const std::string&);
-    std::string Receive();
+    void stringSend(std::string msg);
+    void fileUpload(std::ifstream& file);
+    std::string stringReceive();
 };
 
-void SocketClient::Send(const std::string& msg){
-    send(socket, msg.c_str(), static_cast<int>(msg.size()), 0);
+void SocketClient::stringSend(std::string msg) {
+    if (msg.size() > UINT32_MAX) {
+        throw std::runtime_error("Payload too large");
+    }
+    uint32_t payloadSize = static_cast<uint32_t>(msg.size());
+    std::string packet(sizeof(payloadSize) + msg.size(), '\0');
+    memcpy(packet.data(), &payloadSize, sizeof(payloadSize));
+    memcpy(packet.data() + sizeof(payloadSize), msg.data(), msg.size());
+
+    send(socket, packet.data(), packet.size(), 0);
 }
 
-std::string SocketClient::Receive() {
-    char buffer[BUFFER_SIZE]{};
+void SocketClient::fileUpload(std::ifstream& file) {
+    file.seekg(0, std::ios::end);
+    uint32_t fileSize = file.tellg();
+    file.seekg(0, std::ios::beg);
 
-    int bytes = recv(socket, buffer, BUFFER_SIZE, 0);
+    send(socket, (char*)&fileSize, sizeof(fileSize), 0);
 
-    if(bytes <= 0)
-        return "";
-
-    return std::string(buffer, bytes);
+    char buffer[BUFFER_SIZE];
+    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
+        send(socket, buffer, file.gcount(), 0);
+    }
 }
 
+std::string SocketClient::stringReceive() {
+    uint32_t payloadSize = 0;
+
+    int ret = recv(socket,
+                   reinterpret_cast<char*>(&payloadSize),
+                   sizeof(payloadSize),
+                   0);
+
+    if (ret <= 0) {
+        return {};
+    }
+
+    std::string payload(payloadSize, '\0');
+
+    int totalReceived = 0;
+    while (totalReceived < payloadSize) {
+        int bytes = recv(socket,
+                         reinterpret_cast<char*>(payload.data()) + totalReceived,
+                         payloadSize - totalReceived,
+                         0);
+
+        if (bytes <= 0) {
+            return {};
+        }
+
+        totalReceived += bytes;
+    }
+
+    return payload;
+}
 
 
 class FileManager {
@@ -65,7 +106,7 @@ void FileManager::HandleList() {
     
     if (!pipe) {
         std::string errorMsg = "ERROR: Khong the thuc thi lenh he thong.\n";
-        client.Send(errorMsg);
+        client.stringSend(errorMsg);
         return;
     }
 
@@ -80,8 +121,114 @@ void FileManager::HandleList() {
         result += "\n[!] Lenh ket thuc voi loi (Code: " + std::to_string(returnCode) + ")\n";
     }
 
+    std::cout << "[+] Da thuc hien lenh LIST\n";
+
     // Gửi toàn bộ kết quả trả về cho Server qua Socket
-    client.Send(result);
+    client.stringSend(result);
+}
+
+// Hàm xử lý lệnh GET (Tải file)
+void FileManager::HandleDownload(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file.is_open()) {
+        std::string msg = "ERROR: Khong the mo file.\n";
+        client.stringSend(msg);
+        return;
+    }
+
+    // Thông báo cho Server biết file hợp lệ và chuẩn bị gửi
+    client.stringSend("START");
+
+    client.fileUpload(file);
+    
+    file.close();
+    std::cout << "[+] Da gui xong file: " << filename << "\n";
+}
+
+// Hàm xử lý tải toàn bộ Folder (Nén lại rồi gửi)
+void FileManager::HandleDownloadDir(const std::string& foldername) {
+    if (!fs::exists(foldername) || !fs::is_directory(foldername)) {
+        std::string msg = "ERROR: Thu muc khong ton tai.\n";
+        client.stringSend(msg);
+        return;
+    }
+
+    fs::path absolutePath = fs::absolute(foldername);
+    std::string parentDir = absolutePath.parent_path().string();
+    std::string dirName = absolutePath.filename().string();
+
+    std::string tarCmd = "tar -czf archive.tar.gz -C \"" + parentDir + "\" \"" + dirName + "\"";
+    
+    // Thực hiện nén trước
+    int res = system(tarCmd.c_str());
+    if (res != 0) {
+        std::string msg = "ERROR: Khong the nen thu muc.\n";
+        client.stringSend(msg);
+        return;
+    }
+
+    // Mở file sau khi nén thành công
+    std::ifstream file("archive.tar.gz", std::ios::binary);
+    if (!file.is_open()) {
+        std::string msg = "ERROR: Khong the mo file archive.\n";
+        client.stringSend(msg);
+        return;
+    }
+
+    // Gửi tín hiệu thông báo cho Server: Mọi thứ đã sẵn sàng
+    std::string startMsg = "START";
+    client.stringSend(startMsg);
+
+    client.fileUpload(file);
+
+    fs::remove("archive.tar.gz");
+    std::cout << "[+] Da nén va gui xong folder qua socket!\n";
+}
+
+// Hàm xử lý việc tạo file mới từ xa
+void FileManager::HandleCreateFile(const std::string& filename) {
+    // 1. Kiểm tra xem file đã tồn tại chưa bằng thư viện chuẩn fstream
+    // (Tránh việc vô tình ghi đè lên file quan trọng có sẵn)
+    fs::path filepath(filename);
+
+    if (fs::exists(filepath)) {
+        std::string errorMsg =
+            "ERROR: File '" + filename + "' da ton tai tren Client. Dung EDITFILE de sua.\n";
+        client.stringSend(errorMsg);
+        return;
+    }
+
+    // 2. Gửi tín hiệu thông báo sẵn sàng nhận nội dung cho file mới
+    std::string readyMsg = "READY_FOR_CONTENT";
+    client.stringSend(readyMsg);
+
+    // 3. Nhận nội dung ban đầu từ Server
+    auto content = client.stringReceive();
+    if (content.empty()) {
+        std::cout << "[-] Mat ket noi khi dang nhan noi dung file moi.\n";
+        return;
+    }
+
+    // 4. Tiến hành tạo và ghi file mới
+    // Nếu có thư mục cha thì tạo
+    if (!filepath.parent_path().empty()) {
+        fs::create_directories(filepath.parent_path());
+    }
+
+    std::ofstream file(filepath, std::ios::binary);
+    std::string statusMsg;
+
+    if (!file.is_open()) {
+        statusMsg = "ERROR: Khong the tao file tren Client (Kiem tra lai duong dan hoac quyen ghi).\n";
+    } else {
+        file.write(content.c_str(), content.length());
+        file.close();
+        statusMsg = "SUCCESS: Da tao file '" + filename + "' moi thanh cong.\n";
+    }
+
+    // 5. Gửi báo cáo kết quả về Server và in log tại Client
+    client.stringSend(statusMsg);
+    std::cout << "[+] Thuc hien CREATEFILE " << filename << ": " << statusMsg;
 }
 
 // Hàm xử lý việc thay đổi nội dung file từ xa
@@ -89,12 +236,12 @@ void FileManager::HandleEditFile(const std::string& filename) {
     
     // 1. Gửi tín hiệu thông báo sẵn sàng nhận nội dung mới
     std::string readyMsg = "READY_FOR_CONTENT";
-    client.Send(readyMsg.c_str());
+    client.stringSend(readyMsg);
 
     // 2. Nhận nội dung mới từ Server (đặt cấu hình tạm thời nhận dữ liệu)
-    auto newContent = client.Receive();
+    auto newContent = client.stringReceive();
     if (newContent.empty()) {
-        std::cout << "[-] Mat ket noi khi dang nhan noi dung file.\n" << std::endl;
+        std::cout << "[-] Mat ket noi khi dang nhan noi dung file.\n";
         return;
     }
 
@@ -111,8 +258,8 @@ void FileManager::HandleEditFile(const std::string& filename) {
     }
 
     // 4. Gửi báo cáo kết quả về Server
-    client.Send(statusMsg);
-    std::cout << "[+] Thuc hien EDITFILE " << filename << ": " << statusMsg << std::endl;
+    client.stringSend(statusMsg);
+    std::cout << "[+] Thuc hien EDITFILE " << filename << ": " << statusMsg << "\n";
 }
 
 // Hàm xử lý việc xóa file từ xa
@@ -135,8 +282,8 @@ void FileManager::HandleRemoveFile(const std::string& filename) {
     }
 
     // 3. Gửi báo cáo kết quả về Server và in log ra màn hình Client
-    client.Send(statusMsg);
-    std::cout << "[+] Thuc hien REMOVEFILE " << filename << ": " << statusMsg << std::endl;
+    client.stringSend(statusMsg);
+    std::cout << "[+] Thuc hien REMOVEFILE " << filename << ": " << statusMsg << "\n";
 }
 
 // Hàm xử lý việc chạy một file thực thi trên Client
@@ -146,7 +293,7 @@ void FileManager::HandleRunFile(const std::string& filepath) {
     // 1. Kiểm tra xem file có tồn tại hay không
     if (!fs::exists(filepath)) {
         statusMsg = "ERROR: File '" + filepath + "' khong ton tai.\n";
-        client.Send(statusMsg);
+        client.stringSend(statusMsg);
         return;
     }
 
@@ -156,7 +303,7 @@ void FileManager::HandleRunFile(const std::string& filepath) {
         fs::permissions(filepath, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec, fs::perm_options::add);
     } catch (const std::exception& e) {
         statusMsg = "ERROR: Khong the cap quyen thuc thi cho file.\n";
-        client.Send(statusMsg);
+        client.stringSend(statusMsg);
         return;
     }
 
@@ -183,124 +330,8 @@ void FileManager::HandleRunFile(const std::string& filepath) {
     }
 
     // 4. Gửi phản hồi về Server
-    client.Send(statusMsg);
-    std::cout << "[+] Thuc hien RUNFILE " << filepath << ": " << statusMsg << std::endl;
-}
-
-// Hàm xử lý việc tạo file mới từ xa
-void FileManager::HandleCreateFile(const std::string& filename) {
-    // 1. Kiểm tra xem file đã tồn tại chưa bằng thư viện chuẩn fstream
-    // (Tránh việc vô tình ghi đè lên file quan trọng có sẵn)
-    std::ifstream checkFile(filename);
-    if (checkFile.is_open()) {
-        checkFile.close();
-        std::string errorMsg = "ERROR: File '" + filename + "' da ton tai tren Client. Dung EDITFILE de sua.\n";
-        client.Send(errorMsg);
-        return;
-    }
-
-    // 2. Gửi tín hiệu thông báo sẵn sàng nhận nội dung cho file mới
-    std::string readyMsg = "READY_FOR_CONTENT";
-    client.Send(readyMsg);
-
-    // 3. Nhận nội dung ban đầu từ Server
-    auto content = client.Receive();
-    if (content.empty()) {
-        std::cout << "[-] Mat ket noi khi dang nhan noi dung file moi.\n" << std::endl;
-        return;
-    }
-
-    // 4. Tiến hành tạo và ghi file mới
-    std::ofstream file(filename, std::ios::out | std::ios::binary);
-    std::string statusMsg;
-
-    if (!file.is_open()) {
-        statusMsg = "ERROR: Khong the tao file tren Client (Kiem tra lai duong dan hoac quyen ghi).\n";
-    } else {
-        file.write(content.c_str(), content.length());
-        file.close();
-        statusMsg = "SUCCESS: Da tao file '" + filename + "' moi thanh cong.\n";
-    }
-
-    // 5. Gửi báo cáo kết quả về Server và in log tại Client
-    client.Send(statusMsg);
-    std::cout << "[+] Thuc hien CREATEFILE " << filename << ": " << statusMsg << std::endl;
-}
-
-// Hàm xử lý lệnh GET (Tải file)
-void FileManager::HandleDownload(const std::string& filename) {
-    std::ifstream file(filename, std::ios::binary);
-    if (!file.is_open()) {
-        std::string msg = "ERROR: Khong the mo file.\n";
-        client.Send(msg);
-        return;
-    }
-
-    // Thông báo cho Server biết file hợp lệ và chuẩn bị gửi
-    client.Send("START");
-    usleep(100000); // Ngủ 100ms (100,000 microseconds) để tránh dính gói tin (TCP Coalescing)
-
-    char buffer[BUFFER_SIZE];
-    while (file.read(buffer, sizeof(buffer))) {
-        client.Send(buffer);
-    }
-    // Gửi nốt phần dữ liệu còn lại nếu nhỏ hơn BUFFER_SIZE
-    if (file.gcount() > 0) {
-        client.Send(buffer);
-    }
-    
-    file.close();
-    std::cout << "[+] Da gui xong file: " << filename << std::endl;
-}
-
-// Hàm xử lý tải toàn bộ Folder (Nén lại rồi gửi)
-void FileManager::HandleDownloadDir(const std::string& foldername) {
-    if (!fs::exists(foldername) || !fs::is_directory(foldername)) {
-        std::string msg = "ERROR: Thu muc khong ton tai.\n";
-        client.Send(msg);
-        return;
-    }
-
-    fs::path absolutePath = fs::absolute(foldername);
-    std::string parentDir = absolutePath.parent_path().string();
-    std::string dirName = absolutePath.filename().string();
-
-    std::string tarCmd = "tar -czf archive.tar.gz -C \"" + parentDir + "\" \"" + dirName + "\"";
-    
-    // Thực hiện nén trước
-    int res = system(tarCmd.c_str());
-    if (res != 0) {
-        std::string msg = "ERROR: Khong the nen thu muc.\n";
-        client.Send(msg);
-        return;
-    }
-
-    // Mở file sau khi nén thành công
-    std::ifstream file("archive.tar.gz", std::ios::binary);
-    if (!file.is_open()) {
-        std::string msg = "ERROR: Khong the mo file archive.\n";
-        client.Send(msg);
-        return;
-    }
-
-    // Gửi tín hiệu thông báo cho Server: Mọi thứ đã sẵn sàng
-    std::string startMsg = "START";
-    client.Send(startMsg);
-    
-    // Ngủ 200ms để Server kịp nhận gói START tách biệt hoàn toàn với gói dữ liệu file tiếp theo
-    usleep(200000); 
-
-    char buffer[BUFFER_SIZE];
-    while (file.read(buffer, sizeof(buffer))) {
-        client.Send(buffer);
-    }
-    if (file.gcount() > 0) {
-        client.Send(buffer);
-    }
-    file.close();
-
-    fs::remove("archive.tar.gz");
-    std::cout << "[+] Da nén va gui xong folder qua socket!\n";
+    client.stringSend(statusMsg);
+    std::cout << "[+] Thuc hien RUNFILE " << filepath << ": " << statusMsg << "\n";
 }
 
 class ProcessManager {
@@ -319,7 +350,7 @@ void ProcessManager::HandleProcessList() {
     FILE* pipe = popen("ps -ef", "r");
     if (!pipe) {
         std::string errorMsg = "ERROR: Khong the thuc thi lenh xem tien trinh.\n";
-        client.Send(errorMsg);
+        client.stringSend(errorMsg);
         return;
     }
 
@@ -331,7 +362,7 @@ void ProcessManager::HandleProcessList() {
     pclose(pipe);
 
     // Gửi toàn bộ danh sách tiến trình về Server
-    client.Send(result);
+    client.stringSend(result);
     std::cout << "[+] Da gui danh sach tien trinh (ps -ef) ve Server.\n";
 }
 
@@ -340,7 +371,7 @@ void ProcessManager::HandleKillProcess(const std::string& pid) {
     // Kiểm tra chuỗi PID hợp lệ (tránh việc truyền ký tự lạ gây lỗi lệnh hệ thống)
     if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos) {
         std::string msg = "ERROR: PID khong hop le (phai la so nguyen).\n";
-        client.Send(msg);
+        client.stringSend(msg);
         return;
     }
 
@@ -359,7 +390,7 @@ void ProcessManager::HandleKillProcess(const std::string& pid) {
     }
 
     // Gửi báo cáo trạng thái về cho Server
-    client.Send(statusMsg);
+    client.stringSend(statusMsg);
 }
 
 
@@ -433,8 +464,8 @@ void SystemInfo::HandleSysInfo() {
     info += "=================================\n";
 
     // Gửi toàn bộ chuỗi thông tin về cho Server
-    client.Send(info);
-    std::cout << "[+] Da gui thong tin he thong ve Server." << std::endl;
+    client.stringSend(info);
+    std::cout << "[+] Da gui thong tin he thong ve Server." << "\n";
 }
 
 
@@ -493,19 +524,20 @@ void RatClient::Listen() {
         close(client.socket);
         exit(1);
     }
-    std::cout << "[+] Ket noi thanh cong!\n";
+    std::cout << "[+] Ket noi thanh cong!\n\n";
 }
 
 void RatClient::CommandLoop() {
     while (true) {
-        auto command = client.Receive();
+        auto command = client.stringReceive();
         if (command.empty()) {
             std::cout << "[-] Mat ket noi voi Server.\n";
             break;
         }
 
-        std::cout << "[*] Lenh nhan duoc: " << command << std::endl;
+        std::cout << "[*] Lenh nhan duoc: " << command << "\n";
         HandleCommand(command);
+        std::cout << "\n";
     }
 }
 
