@@ -43,21 +43,28 @@ void SocketClient::stringSend(std::string msg) {
 std::string SocketClient::stringReceive() {
     uint32_t payloadSize = 0;
 
-    int ret = recv(socket,
-                   reinterpret_cast<char*>(&payloadSize),
-                   sizeof(payloadSize),
-                   0);
+    // Đọc đủ 4 byte kích thước
+    int totalReceived = 0;
+    while (totalReceived < sizeof(payloadSize)) {
+        int bytes = recv(socket,
+                         reinterpret_cast<char*>(&payloadSize) + totalReceived,
+                         sizeof(payloadSize) - totalReceived,
+                         0);
 
-    if (ret <= 0) {
-        return {};
+        if (bytes <= 0) {
+            return {};
+        }
+
+        totalReceived += bytes;
     }
 
     std::string payload(payloadSize, '\0');
 
-    int totalReceived = 0;
+    // Đọc đủ payload
+    totalReceived = 0;
     while (totalReceived < payloadSize) {
         int bytes = recv(socket,
-                         reinterpret_cast<char*>(payload.data()) + totalReceived,
+                         payload.data() + totalReceived,
                          payloadSize - totalReceived,
                          0);
 
@@ -74,36 +81,41 @@ std::string SocketClient::stringReceive() {
 void SocketClient::fileDownload(std::ofstream& file) {
     uint32_t payloadSize = 0;
 
-    int ret = recv(socket,
-                   reinterpret_cast<char*>(&payloadSize),
-                   sizeof(payloadSize),
-                   0);
+    // Đọc đủ 4 byte kích thước
+    int totalReceived = 0;
+    while (totalReceived < sizeof(payloadSize)) {
+        int bytes = recv(socket,
+                         reinterpret_cast<char*>(&payloadSize) + totalReceived,
+                         sizeof(payloadSize) - totalReceived,
+                         0);
 
-    if (ret <= 0) {
-        return;
+        if (bytes <= 0) {
+            return;
+        }
+
+        totalReceived += bytes;
     }
 
     char buffer[BUFFER_SIZE];
 
-    int totalReceived = 0;
+    // Đọc đủ payload
+    totalReceived = 0;
     while (totalReceived < payloadSize) {
-        int toRead = (payloadSize - totalReceived < BUFFER_SIZE) ? payloadSize - totalReceived : BUFFER_SIZE;
-        int bytes = recv(socket,
-                         buffer,
-                         toRead,
-                         0);
-        
-        if (bytes > 0) {
-            file.write(buffer, bytes);
-            totalReceived += bytes;
-        }
-        else {
-            break;
+        int toRead = std::min(
+            static_cast<uint32_t>(BUFFER_SIZE),
+            payloadSize - totalReceived
+        );
+
+        int bytes = recv(socket, buffer, toRead, 0);
+
+        if (bytes <= 0) {
+            return;
         }
 
+        file.write(buffer, bytes);
+        totalReceived += bytes;
     }
 }
-
 
 
 class DownloadManager
@@ -218,7 +230,7 @@ private:
     int serverSocket{};
     int clientSocket{};
 
-    void InitWinsock();
+    void InitSocket();
     void WaitForClient();
     void CommandLoop();
 
@@ -234,12 +246,12 @@ private:
 };
 
 void RatServer::Start() {
-    InitWinsock();
+    InitSocket();
     WaitForClient();
     CommandLoop();
 }
 
-void RatServer::InitWinsock() {
+void RatServer::InitSocket() {
     serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     
     sockaddr_in serverAddr;
@@ -281,14 +293,14 @@ void RatServer::HandleCommand(const std::string& input) {
 
     if (input.rfind("LIST", 0) == 0) {
         ListFile();
-    } 
+    }
     else if (input.rfind("GETFILE ", 0) == 0) {
         std::string filename = input.substr(8);
-        downloadManager.ReceiveFile(filename); // Hàm nhận file lẻ cũ của bạn
+        downloadManager.ReceiveFile(filename); // Hàm nhận file
     }
     else if (input.rfind("GETDIR ", 0) == 0) {
         std::string foldername = input.substr(7);
-        downloadManager.ReceiveFolder(foldername); // Hàm nhận folder mới
+        downloadManager.ReceiveFolder(foldername); // Hàm nhận folder
     }
     else if (input.rfind("CREATEFILE ", 0) == 0) { // Thêm nhánh xử lý CREATEFILE
         std::string filename = input.substr(9);

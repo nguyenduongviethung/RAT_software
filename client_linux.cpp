@@ -54,21 +54,28 @@ void SocketClient::fileUpload(std::ifstream& file) {
 std::string SocketClient::stringReceive() {
     uint32_t payloadSize = 0;
 
-    int ret = recv(socket,
-                   reinterpret_cast<char*>(&payloadSize),
-                   sizeof(payloadSize),
-                   0);
+    // Đọc đủ 4 byte kích thước
+    int totalReceived = 0;
+    while (totalReceived < sizeof(payloadSize)) {
+        int bytes = recv(socket,
+                         reinterpret_cast<char*>(&payloadSize) + totalReceived,
+                         sizeof(payloadSize) - totalReceived,
+                         0);
 
-    if (ret <= 0) {
-        return {};
+        if (bytes <= 0) {
+            return {};
+        }
+
+        totalReceived += bytes;
     }
 
     std::string payload(payloadSize, '\0');
 
-    int totalReceived = 0;
+    // Đọc đủ payload
+    totalReceived = 0;
     while (totalReceived < payloadSize) {
         int bytes = recv(socket,
-                         reinterpret_cast<char*>(payload.data()) + totalReceived,
+                         payload.data() + totalReceived,
                          payloadSize - totalReceived,
                          0);
 
