@@ -298,52 +298,71 @@ void FileManager::HandleRemoveFile(const std::string& filename) {
     std::cout << "[+] Thuc hien REMOVEFILE " << filename << ": " << statusMsg << "\n";
 }
 
-// Hàm xử lý việc chạy một file thực thi trên Client
 void FileManager::HandleRunFile(const std::string& filepath) {
     std::string statusMsg;
 
-    // 1. Kiểm tra xem file có tồn tại hay không
     if (!fs::exists(filepath)) {
         statusMsg = "ERROR: File '" + filepath + "' khong ton tai.\n";
         client.stringSend(statusMsg);
         return;
     }
 
-    // 2. Kiểm tra xem có quyền thực thi (Execute) không, nếu chưa có thì cấp quyền
-    // (Tương đương lệnh chmod +x trên Linux)
     try {
-        fs::permissions(filepath, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec, fs::perm_options::add);
-    } catch (const std::exception& e) {
+        fs::permissions(
+            filepath,
+            fs::perms::owner_exec |
+            fs::perms::group_exec |
+            fs::perms::others_exec,
+            fs::perm_options::add
+        );
+    } catch (const std::exception&) {
         statusMsg = "ERROR: Khong the cap quyen thuc thi cho file.\n";
         client.stringSend(statusMsg);
         return;
     }
 
-    std::cout << "[*] Dang khoi chay file: " << filepath << "...\n";
-
-    // 3. Xây dựng lệnh chạy ngầm
-    // Định dạng đường dẫn chuẩn hóa
     std::string runCmd;
-    if (filepath.rfind("/", 0) == std::string::npos && filepath.rfind("./", 0) == std::string::npos) {
+    if (filepath.rfind("/", 0) == std::string::npos &&
+        filepath.rfind("./", 0) == std::string::npos) {
         runCmd = "./" + filepath;
     } else {
         runCmd = filepath;
     }
 
-    // Đẩy tiến trình chạy ngầm bằng cách chuyển hướng log ra /dev/null và thêm &
-    runCmd = runCmd + " > /dev/null 2>&1 &";
+    std::string outputFile = "/tmp/runfile_output.txt";
 
-    int res = system(runCmd.c_str());
+    // Chạy file và ghi stdout + stderr vào file
+    std::string cmd =
+        runCmd + " > " + outputFile + " 2>&1";
 
-    if (res == 0) {
-        statusMsg = "SUCCESS: Da kich hoat lenh chay file '" + filepath + "' ngam thanh cong.\n";
-    } else {
-        statusMsg = "ERROR: Co loi xay ra khi goi thuc thi file.\n";
+    int res = system(cmd.c_str());
+
+    if (res != 0) {
+        statusMsg = "ERROR: File chay that bai.\n";
+        client.stringSend(statusMsg);
+        return;
     }
 
-    // 4. Gửi phản hồi về Server
+    // Đọc output
+    std::ifstream file(outputFile);
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+
+    std::string output = buffer.str();
+
+    // Xóa file tạm
+    fs::remove(outputFile);
+
+    if (output.empty()) {
+        statusMsg = "SUCCESS: File da chay, khong co output.\n";
+    } else {
+        statusMsg =
+            "SUCCESS: File da chay.\n"
+            "OUTPUT:\n" +
+            output;
+    }
+
     client.stringSend(statusMsg);
-    std::cout << "[+] Thuc hien RUNFILE " << filepath << ": " << statusMsg << "\n";
 }
 
 // Hàm bổ trợ thực hiện XOR dữ liệu file
