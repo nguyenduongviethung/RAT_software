@@ -279,7 +279,7 @@ void RatServer::CommandLoop() {
 void RatServer::HandleCommand(const std::string& input) {
     char buffer[BUFFER_SIZE];
 
-    if (input == "LIST") {
+    if (input.rfind("LIST", 0) == 0) {
         ListFile();
     } 
     else if (input.rfind("GETFILE ", 0) == 0) {
